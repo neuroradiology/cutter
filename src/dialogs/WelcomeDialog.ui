@@ -208,6 +208,16 @@
              <string>Dark Theme</string>
             </property>
            </item>
+           <item>
+            <property name="text">
+             <string>Midnight Theme</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>Light Theme</string>
+            </property>
+           </item>
           </widget>
          </item>
          <item>

@@ -21,13 +21,13 @@
 #include <QDialog>
 #include <QTreeWidget>
 
-Dashboard::Dashboard(MainWindow *main, QAction *action) :
-    CutterDockWidget(main, action),
+Dashboard::Dashboard(MainWindow *main) :
+    CutterDockWidget(main),
     ui(new Ui::Dashboard)
 {
     ui->setupUi(this);
 
-    connect(Core(), SIGNAL(refreshAll()), this, SLOT(updateContents()));
+    connect(Core(), &CutterCore::refreshAll, this, &Dashboard::updateContents);
 }
 
 Dashboard::~Dashboard() {}
@@ -38,83 +38,109 @@ void Dashboard::updateContents()
     QJsonObject item = docu.object()["core"].toObject();
     QJsonObject item2 = docu.object()["bin"].toObject();
 
-    this->ui->fileEdit->setText(item["file"].toString());
-    this->ui->formatEdit->setText(item["format"].toString());
-    this->ui->modeEdit->setText(item["mode"].toString());
-    this->ui->typeEdit->setText(item["type"].toString());
-    this->ui->sizeEdit->setText(qhelpers::formatBytecount(item["size"].toDouble()));
-    this->ui->fdEdit->setText(QString::number(item["fd"].toDouble()));
+    setPlainText(this->ui->fileEdit, item["file"].toString());
+    setPlainText(this->ui->formatEdit, item["format"].toString());
+    setPlainText(this->ui->modeEdit, item["mode"].toString());
+    setPlainText(this->ui->typeEdit, item["type"].toString());
+    setPlainText(this->ui->sizeEdit, qhelpers::formatBytecount(item["size"].toDouble()));
+    setPlainText(this->ui->fdEdit, QString::number(item["fd"].toDouble()));
 
-    this->ui->archEdit->setText(item2["arch"].toString());
-    this->ui->langEdit->setText(item2["lang"].toString().toUpper());
-    this->ui->classEdit->setText(item2["class"].toString());
-    this->ui->machineEdit->setText(item2["machine"].toString());
-    this->ui->osEdit->setText(item2["os"].toString());
-    this->ui->subsysEdit->setText(item2["subsys"].toString());
-    this->ui->endianEdit->setText(item2["endian"].toString());
-    this->ui->compiledEdit->setText(item2["compiled"].toString());
-    this->ui->bitsEdit->setText(QString::number(item2["bits"].toDouble()));
+    setPlainText(this->ui->archEdit, item2["arch"].toString());
+    setPlainText(this->ui->langEdit, item2["lang"].toString().toUpper());
+    setPlainText(this->ui->classEdit, item2["class"].toString());
+    setPlainText(this->ui->machineEdit, item2["machine"].toString());
+    setPlainText(this->ui->osEdit, item2["os"].toString());
+    setPlainText(this->ui->subsysEdit, item2["subsys"].toString());
+    setPlainText(this->ui->endianEdit, item2["endian"].toString());
+    setPlainText(this->ui->compilationDateEdit, item2["compiled"].toString());
+    setPlainText(this->ui->compilerEdit, item2["compiler"].toString());
+    setPlainText(this->ui->bitsEdit, QString::number(item2["bits"].toDouble()));
 
-    if (!item2["relro"].isUndefined()) {
-        QString relro = item2["relro"].toString().split(" ").at(0);
+    if (!item2["relro"].toString().isEmpty()) {
+        QString relro = item2["relro"].toString().section(QLatin1Char(' '), 0, 0);
         relro[0] = relro[0].toUpper();
-        this->ui->relroEdit->setText(relro);
+        setPlainText(this->ui->relroEdit, relro);
+    } else {
+        setPlainText(this->ui->relroEdit, "N/A");
     }
 
-    this->ui->baddrEdit->setText(RAddressString(item2["baddr"].toVariant().toULongLong()));
+    setPlainText(this->ui->baddrEdit, RAddressString(item2["baddr"].toVariant().toULongLong()));
 
-    if (item2["va"].toBool() == true) {
-        this->ui->vaEdit->setText("True");
-    } else {
-        this->ui->vaEdit->setText("False");
-    }
-    if (item2["canary"].toBool() == true) {
-        this->ui->canaryEdit->setText("True");
-    } else {
-        this->ui->canaryEdit->setText("False");
-    }
-    if (item2["crypto"].toBool() == true) {
-        this->ui->cryptoEdit->setText("True");
-    } else {
-        this->ui->cryptoEdit->setText("False");
-    }
-    if (item2["nx"].toBool() == true) {
-        this->ui->nxEdit->setText("True");
-    } else {
-        this->ui->nxEdit->setText("False");
-    }
-    if (item2["pic"].toBool() == true) {
-        this->ui->picEdit->setText("True");
-    } else {
-        this->ui->picEdit->setText("False");
-    }
-    if (item2["static"].toBool() == true) {
-        this->ui->staticEdit->setText("True");
-    } else {
-        this->ui->staticEdit->setText("False");
-    }
-    if (item2["stripped"].toBool() == true) {
-        this->ui->strippedEdit->setText("True");
-    } else {
-        this->ui->strippedEdit->setText("False");
-    }
-    if (item2["relocs"].toBool() == true) {
-        this->ui->relocsEdit->setText("True");
-    } else {
-        this->ui->relocsEdit->setText("False");
+    // set booleans
+    setBool(this->ui->vaEdit, item2, "va");
+    setBool(this->ui->canaryEdit, item2, "canary");
+    setBool(this->ui->cryptoEdit, item2, "crypto");
+    setBool(this->ui->nxEdit, item2, "nx");
+    setBool(this->ui->picEdit, item2, "pic");
+    setBool(this->ui->staticEdit, item2, "static");
+    setBool(this->ui->strippedEdit, item2, "stripped");
+    setBool(this->ui->relocsEdit, item2, "relocs");
+
+    // Add file hashes, analysis info and libraries
+
+    QJsonObject hashes = Core()->cmdj("itj").object();
+
+    // Delete hashesWidget if it isn't null to avoid duplicate components
+    if (hashesWidget) {
+        hashesWidget->deleteLater();
     }
 
-    // Add file hashes and libraries
-    QString md5 = Core()->cmd("e file.md5");
-    QString sha1 = Core()->cmd("e file.sha1");
-    ui->md5Edit->setText(md5);
-    ui->sha1Edit->setText(sha1);
+    // Define dynamic components to hold the hashes
+    hashesWidget = new QWidget();
+    QFormLayout *hashesLayout = new QFormLayout;
+    hashesWidget->setLayout(hashesLayout);
+    ui->hashesVerticalLayout->addWidget(hashesWidget);
 
-    QString libs = Core()->cmd("il");
-    QStringList lines = libs.split("\n", QString::SkipEmptyParts);
-    if (!lines.isEmpty()) {
-        lines.removeFirst();
-        lines.removeLast();
+    // Add hashes as a pair of Hash Name : Hash Value.
+    for (const QString& key : hashes.keys()) {
+        // Create a bold QString with the hash name uppercased
+        QString label = QString("<b>%1:</b>").arg(key.toUpper());
+
+        // Define a Read-Only line edit to display the hash value
+        QLineEdit *hashLineEdit = new QLineEdit();
+        hashLineEdit->setReadOnly(true);
+        hashLineEdit->setText(hashes.value(key).toString());
+
+        // Set cursor position to begining to avoid long hashes (e.g sha256)
+        // to look truncated at the begining
+        hashLineEdit->setCursorPosition(0);
+
+        // Add both controls to a form layout in a single row
+        hashesLayout->addRow(new QLabel(label), hashLineEdit);
+    }
+
+    // Add the Entropy value of the file to the dashboard
+    {
+        // Scope for TempConfig
+        TempConfig tempConfig;
+        tempConfig.set("io.va", false);
+
+        // Calculate the Entropy of the entire binary from offset 0 to $s
+        // where $s is the size of the entire file
+        QString entropy = Core()->cmdRawAt("ph entropy $s", 0).trimmed();
+
+        // Define a Read-Only line edit to display the entropy value
+        QLineEdit *entropyLineEdit = new QLineEdit();
+        entropyLineEdit->setReadOnly(true);
+        entropyLineEdit->setText(entropy);
+        hashesLayout->addRow(new QLabel(tr("<b>Entropy:</b>")), entropyLineEdit);
+    }
+
+    QJsonObject analinfo = Core()->cmdj("aaij").object();
+    setPlainText(ui->functionsLineEdit, QString::number(analinfo["fcns"].toInt()));
+    setPlainText(ui->xRefsLineEdit, QString::number(analinfo["xrefs"].toInt()));
+    setPlainText(ui->callsLineEdit, QString::number(analinfo["calls"].toInt()));
+    setPlainText(ui->stringsLineEdit, QString::number(analinfo["strings"].toInt()));
+    setPlainText(ui->symbolsLineEdit, QString::number(analinfo["symbols"].toInt()));
+    setPlainText(ui->importsLineEdit, QString::number(analinfo["imports"].toInt()));
+    setPlainText(ui->coverageLineEdit, QString::number(analinfo["covrage"].toInt()) + " bytes");
+    setPlainText(ui->codeSizeLineEdit, QString::number(analinfo["codesz"].toInt()) + " bytes");
+    setPlainText(ui->percentageLineEdit, QString::number(analinfo["percent"].toInt()) + "%");
+
+    QStringList libs = Core()->cmdList("il");
+    if (!libs.isEmpty()) {
+        libs.removeFirst();
+        libs.removeLast();
     }
 
     // dunno: why not label->setText(lines.join("\n")?
@@ -130,10 +156,11 @@ void Dashboard::updateContents()
         }
     }
 
-    for (const QString &lib : lines) {
+    for (const QString &lib : libs) {
         QLabel *label = new QLabel(this);
         label->setText(lib);
         label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
         ui->verticalLayout_2->addWidget(label);
     }
 
@@ -142,15 +169,6 @@ void Dashboard::updateContents()
 
     QSpacerItem *spacer = new QSpacerItem(1, 1, QSizePolicy::Fixed, QSizePolicy::Expanding);
     ui->verticalLayout_2->addSpacerItem(spacer);
-
-    // Add entropy value
-    {
-        // Scope for TempConfig
-        TempConfig tempConfig;
-        tempConfig.set("io.va", false);
-        QString entropy = Core()->cmd("ph entropy $s @ 0").trimmed();
-        ui->lblEntropy->setText(entropy);
-    }
 
 
     // Get stats for the graphs
@@ -209,5 +227,39 @@ void Dashboard::on_versioninfoButton_clicked()
 
     if (!infoDialog->isVisible()) {
         infoDialog->show();
+    }
+}
+
+/**
+ * @brief Set the text of a QLineEdit. If no text, then "N/A" is set.
+ * @param textBox
+ * @param text
+ */
+void Dashboard::setPlainText(QLineEdit *textBox, const QString &text)
+{
+    if (!text.isEmpty()) {
+        textBox->setText(text);
+    } else {
+        textBox->setText(tr("N/A"));
+    }
+
+    textBox->setCursorPosition(0);
+}
+
+/**
+ * @brief Set the text of a QLineEdit as True, False or N/A if it does not exist
+ * @param textBox
+ * @param isTrue
+ */
+void Dashboard::setBool(QLineEdit *textBox, const QJsonObject &jsonObject, const QString &key)
+{
+    if (jsonObject.contains(key)) {
+        if (jsonObject[key].toBool()) {
+            setPlainText(textBox, tr("True"));
+        } else {
+            setPlainText(textBox, tr("False"));
+        }
+    } else {
+        setPlainText(textBox, tr("N/A"));
     }
 }

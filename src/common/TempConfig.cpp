@@ -6,7 +6,7 @@
 
 TempConfig::~TempConfig()
 {
-    for (auto i = resetValues.constBegin(); i != resetValues.constEnd(); i++) {
+    for (auto i = resetValues.constBegin(); i != resetValues.constEnd(); ++i) {
         switch (i.value().type()) {
         case QVariant::String:
             Core()->setConfig(i.key(), i.value().toString());
@@ -25,6 +25,16 @@ TempConfig::~TempConfig()
 }
 
 TempConfig &TempConfig::set(const QString &key, const QString &value)
+{
+    if (!resetValues.contains(key)) {
+        resetValues[key] = Core()->getConfig(key);
+    }
+
+    Core()->setConfig(key, value);
+    return *this;
+}
+
+TempConfig &TempConfig::set(const QString &key, const char *value)
 {
     if (!resetValues.contains(key)) {
         resetValues[key] = Core()->getConfig(key);

@@ -5,6 +5,8 @@ LinkTypeDialog::LinkTypeDialog(QWidget *parent) :
     QDialog(parent),
     ui(new Ui::LinkTypeDialog)
 {
+    addrValid = false;
+
     ui->setupUi(this);
 
     setWindowTitle(tr("Link type to address"));
@@ -30,12 +32,13 @@ void LinkTypeDialog::setDefaultType(const QString &type)
     }
 }
 
-void LinkTypeDialog::setDefaultAddress(QString address)
+bool LinkTypeDialog::setDefaultAddress(const QString &address)
 {
+    // setting the text here will trigger on_exprLineEdit_textChanged, which will update addrValid
     ui->exprLineEdit->setText(address);
 
-    if (ui->addressLineEdit->text() == tr("Invalid Address")) {
-        return;
+    if (!addrValid) {
+        return false;
     }
 
     // check if the current address is already linked to a type and set it as default
@@ -43,6 +46,7 @@ void LinkTypeDialog::setDefaultAddress(QString address)
     if (!type.isEmpty()) {
         setDefaultType(type);
     }
+    return true;
 }
 
 
@@ -63,7 +67,7 @@ void LinkTypeDialog::done(int r)
             QDialog::done(r);
 
             // Seek to the specified address
-            Core()->seek(address);
+            Core()->seekAndShow(address);
 
             // Refresh the views
             emit Core()->refreshCodeViews();
@@ -91,7 +95,7 @@ QString LinkTypeDialog::findLinkedType(RVA address)
 
     // Extract the given type from returned data
     // TODO: Implement "tlsj" in radare2 or some other function to directly get linked type
-    QString s = ret.split("\n").first();
+    QString s = ret.section(QLatin1Char('\n'), 0, 0);
     return s.mid(1, s.size() - 2);
 }
 
@@ -99,8 +103,10 @@ void LinkTypeDialog::on_exprLineEdit_textChanged(const QString &text)
 {
     RVA addr = Core()->math(text);
     if (Core()->isAddressMapped(addr)) {
-        ui->addressLineEdit->setText("0x" + QString::number(addr, 16));
+        ui->addressLineEdit->setText(RAddressString(addr));
+        addrValid = true;
     } else {
         ui->addressLineEdit->setText(tr("Invalid Address"));
+        addrValid = false;
     }
 }

@@ -1,22 +1,34 @@
+cmake_minimum_required(VERSION 3.5)
 
-cmake_minimum_required(VERSION 3.1)
-
-cmake_policy(SET CMP0074 NEW)
+if(POLICY CMP0074)
+    cmake_policy(SET CMP0074 NEW)
+endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(DisallowInSource)
+include(Utils)
 
 set(CUTTER_PYTHON_MIN 3.5)
 
+option(CUTTER_USE_BUNDLED_RADARE2 "Use radare2 from src/radare2 submodule instead of searching for it on the system" OFF)
+option(CUTTER_USE_ADDITIONAL_RADARE2_PATHS "Search radare2 in additional paths which are not part of default system library paths.\
+ Disable this option if you are linking against radare2 pacakged as proper system library or in a custom path and additional are paths causing problems." ON)
 option(CUTTER_ENABLE_PYTHON "Enable Python integration. Requires Python >= ${CUTTER_PYTHON_MIN}." OFF)
 option(CUTTER_ENABLE_PYTHON_BINDINGS "Enable generating Python bindings with Shiboken2. Unused if CUTTER_ENABLE_PYTHON=OFF." OFF)
-option(CUTTER_ENABLE_JUPYTER "Enable Jupyter integration. Unused if CUTTER_ENABLE_PYTHON=OFF." OFF)
-option(CUTTER_ENABLE_QTWEBENGINE "Use QtWebEngine for in-app Jupyter Browser. Unused if CUTTER_ENABLE_JUPYTER=OFF." OFF)
+option(CUTTER_ENABLE_CRASH_REPORTS "Enable crash report system. Unused if CUTTER_ENABLE_CRASH_REPORTS=OFF" OFF)
+option(CUTTER_APPIMAGE_BUILD "Enable Appimage specific changes. Doesn't cause building of Appimage itself." OFF)
+tri_option(CUTTER_ENABLE_KSYNTAXHIGHLIGHTING "Use KSyntaxHighlighting" AUTO)
+tri_option(CUTTER_ENABLE_GRAPHVIZ "Enable use of graphviz for graph layout" AUTO)
+set(SHIBOKEN_EXTRA_OPTIONS "" CACHE STRING "Extra options for shiboken generator")
+set(CUTTER_EXTRA_PLUGIN_DIRS "" CACHE STRING "List of addition plugin locations")
+option(CUTTER_ENABLE_DEPENDENCY_DOWNLOADS "Enable downloading of dependencies. Setting to OFF doesn't affect any downloads done by r2 build." OFF)
+option(CUTTER_PACKAGE_DEPENDENCIES "During install step include the third party dependencies." OFF)
+option(CUTTER_PACKAGE_R2GHIDRA "Compile and install r2ghidra during install step." OFF)
+option(CUTTER_PACKAGE_R2DEC "Compile and install r2dec during install step." OFF)
 
 if(NOT CUTTER_ENABLE_PYTHON)
     set(CUTTER_ENABLE_PYTHON_BINDINGS OFF)
 endif()
-
 
 # Parse Cutter.pro to get filenames
 include(QMakeProParse)
@@ -38,58 +50,40 @@ project(Cutter VERSION "${CUTTER_VERSION_FULL}")
 
 set(CMAKE_CXX_STANDARD 11)
 
-include_directories(core widgets common plugins)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 find_package(Qt5 REQUIRED COMPONENTS Core Widgets Gui Svg Network)
-if(CUTTER_ENABLE_JUPYTER AND CUTTER_ENABLE_QTWEBENGINE)
-    find_package(Qt5 COMPONENTS WebEngineWidgets)
-    if(NOT Qt5_FOUND)
-        message(FATAL_ERROR "QtWebEngine could not be found which is required for the in-app Jupyter Browser.
-If you do not want to enable this in-app Browser, re-run CMake with -DCUTTER_ENABLE_QTWEBENGINE=OFF.")
-    endif()
-    add_definitions(-DCUTTER_ENABLE_QTWEBENGINE)
+
+include(CutterInstallDirs)
+
+if(CUTTER_USE_BUNDLED_RADARE2)
+    include(BundledRadare2)
+    set(RADARE2_TARGET Radare2)
+else()
+    find_package(Radare2 REQUIRED)
+    set(RADARE2_TARGET Radare2::libr)
 endif()
-
-
-if(WIN32)
-    # use radare2 libraries from submodule on windows
-    set(CUTTER_WIN32_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../cutter_win32")
-    list(APPEND CMAKE_PREFIX_PATH "${CUTTER_WIN32_DIR}")
-
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8) # 64 bit
-        list(APPEND CMAKE_LIBRARY_PATH "${CUTTER_WIN32_DIR}/radare2/lib64")
-    else()
-        list(APPEND CMAKE_LIBRARY_PATH "${CUTTER_WIN32_DIR}/radare2/lib32")
-    endif()
-
-    set(RADARE2_INCLUDE_DIRS "${CUTTER_WIN32_DIR}/radare2/include/libr" "${CUTTER_WIN32_DIR}/include")
-endif()
-
-
-find_package(Radare2 REQUIRED)
-include_directories(${RADARE2_INCLUDE_DIRS})
-link_directories(${RADARE2_LIBRARY_DIRS})
 
 if(CUTTER_ENABLE_PYTHON)
+    find_package(PythonInterp REQUIRED)
     find_package(PythonLibs ${CUTTER_PYTHON_MIN} REQUIRED)
 
     include_directories(${PYTHON_INCLUDE_DIRS})
     add_definitions(-DCUTTER_ENABLE_PYTHON)
 
-    if(CUTTER_ENABLE_JUPYTER)
-        add_definitions(-DCUTTER_ENABLE_JUPYTER)
-    endif()
-
     if(CUTTER_ENABLE_PYTHON_BINDINGS)
-        find_package(PythonInterp REQUIRED)
-        find_package(Shiboken2 "${Qt5_VERSION}" REQUIRED)
-        find_package(PySide2 "${Qt5_VERSION}" REQUIRED)
+        # 5.12.3 => 5.12
+        if("${Qt5_VERSION}" MATCHES "^([0-9]+\\.[0-9]+)\\.[0-9]+")
+            set(Shiboken2_VERSION_REQUIRED "${CMAKE_MATCH_1}")
+        else()
+            message(FATAL_ERROR "Failed to recognize Qt version")
+        endif()
+        find_package(Shiboken2 "${Shiboken2_VERSION_REQUIRED}" REQUIRED)
+        find_package(PySide2 "${Shiboken2_VERSION_REQUIRED}" REQUIRED)
 
-        set(PYSIDE_LIBRARY PySide2::pyside2)
         get_target_property(PYSIDE_INCLUDE_DIR PySide2::pyside2 INTERFACE_INCLUDE_DIRECTORIES)
         list(GET PYSIDE_INCLUDE_DIR 0 PYSIDE_INCLUDE_DIR)
         include_directories(${PYSIDE_INCLUDE_DIR}
@@ -101,15 +95,40 @@ if(CUTTER_ENABLE_PYTHON)
     endif()
 endif()
 
+if(CUTTER_ENABLE_KSYNTAXHIGHLIGHTING)
+    if(CUTTER_ENABLE_KSYNTAXHIGHLIGHTING STREQUAL AUTO)
+        find_package(KF5SyntaxHighlighting)
+        if(KF5SyntaxHighlighting_FOUND)
+            set(KSYNTAXHIGHLIGHTING_STATUS ON)
+        else()
+            set(KSYNTAXHIGHLIGHTING_STATUS "OFF (KSyntaxHighlighting not found)")
+        endif()
+    else()
+        find_package(KF5SyntaxHighlighting REQUIRED)
+        set(KSYNTAXHIGHLIGHTING_STATUS ON)
+    endif()
+else()
+    set(KSYNTAXHIGHLIGHTING_STATUS OFF)
+endif()
 
+if (CUTTER_ENABLE_GRAPHVIZ)
+    if (CUTTER_ENABLE_GRAPHVIZ STREQUAL AUTO)
+        find_package(Graphviz)
+    else()
+        find_package(Graphviz REQUIRED)
+    endif()
+    set (CUTTER_ENABLE_GRAPHVIZ ${Graphviz_FOUND})
+endif()
 
 message(STATUS "")
 message(STATUS "Building Cutter version ${CUTTER_VERSION_FULL}")
 message(STATUS "Options:")
+message(STATUS "- Bundled radare2: ${CUTTER_USE_BUNDLED_RADARE2}")
 message(STATUS "- Python: ${CUTTER_ENABLE_PYTHON}")
 message(STATUS "- Python Bindings: ${CUTTER_ENABLE_PYTHON_BINDINGS}")
-message(STATUS "- Jupyter: ${CUTTER_ENABLE_JUPYTER}")
-message(STATUS "- QtWebEngine: ${CUTTER_ENABLE_QTWEBENGINE}")
+message(STATUS "- Crash Handling: ${CUTTER_ENABLE_CRASH_REPORTS}")
+message(STATUS "- KSyntaxHighlighting: ${KSYNTAXHIGHLIGHTING_STATUS}")
+message(STATUS "- Graphviz: ${CUTTER_ENABLE_GRAPHVIZ}")
 message(STATUS "")
 
 
@@ -130,9 +149,14 @@ if(CUTTER_ENABLE_PYTHON_BINDINGS)
 
     include_directories("${BINDINGS_BUILD_DIR}/CutterBindings")
 
+    set(SHIBOKEN_OPTIONS)
+    if (WIN32)
+        list(APPEND SHIBOKEN_OPTIONS --avoid-protected-hack)
+    endif()
+
     add_custom_command(OUTPUT ${BINDINGS_SOURCE}
-            COMMAND Shiboken2::shiboken2 --project-file="${BINDINGS_BUILD_DIR}/bindings.txt"
-            DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/bindings/bindings.xml"
+            COMMAND Shiboken2::shiboken2 --project-file="${BINDINGS_BUILD_DIR}/bindings.txt" ${SHIBOKEN_OPTIONS} ${SHIBOKEN_EXTRA_OPTIONS}
+            DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/bindings/bindings.xml" "${BINDINGS_BUILD_DIR}/bindings.txt"
             IMPLICIT_DEPENDS CXX "${CMAKE_CURRENT_SOURCE_DIR}/bindings/bindings.h"
             COMMENT "Generating Python bindings with shiboken2")
 else()
@@ -140,6 +164,16 @@ else()
 endif()
 
 
+if (TARGET Graphviz::GVC)
+    list(APPEND SOURCE_FILES ${CUTTER_PRO_GRAPHVIZ_SOURCES})
+    list(APPEND HEADER_FILES ${CUTTER_PRO_GRAPHVIZ_HEADERS})
+endif()
+
+if (WIN32)
+    set(PLATFORM_RESOURCES "img/cutter.rc")
+else()
+    set(PLATFORM_RESOURCES "")
+endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
         OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -148,16 +182,66 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
 endif()
 
 
-add_executable(Cutter ${UI_FILES} ${QRC_FILES} ${SOURCE_FILES} ${HEADER_FILES} ${BINDINGS_SOURCE})
+add_executable(Cutter MACOSX_BUNDLE ${UI_FILES} ${QRC_FILES} ${PLATFORM_RESOURCES} ${SOURCE_FILES} ${HEADER_FILES} ${BINDINGS_SOURCE})
+set_target_properties(Cutter PROPERTIES
+        ENABLE_EXPORTS ON
+        CXX_VISIBILITY_PRESET hidden
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/macos/Info.plist")
+target_compile_definitions(Cutter PRIVATE CUTTER_SOURCE_BUILD)
 
-target_link_libraries(Cutter Qt5::Core Qt5::Widgets Qt5::Gui Qt5::Svg Qt5::Network)
-target_link_libraries(Cutter ${RADARE2_LIBRARIES})
+set(CUTTER_INCLUDE_DIRECTORIES core widgets common plugins menus .)
+foreach(_dir ${CUTTER_INCLUDE_DIRECTORIES})
+    target_include_directories(Cutter PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/${_dir}>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/cutter/${_dir}>
+    )
+endforeach()
+
+if (TARGET Graphviz::GVC)
+    target_link_libraries(Cutter PRIVATE Graphviz::GVC)
+    target_compile_definitions(Cutter PRIVATE CUTTER_ENABLE_GRAPHVIZ)
+endif()
+
+if(CUTTER_ENABLE_CRASH_REPORTS)
+    set(THREADS_PREFER_PTHREAD_FLAG ON)
+    find_package(Threads REQUIRED)
+    target_link_libraries(Cutter PRIVATE Threads::Threads)
+
+    add_definitions(-DCUTTER_ENABLE_CRASH_REPORTS)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g ")
+    if(DEFINED BREAKPAD_FRAMEWORK_DIR)
+        include_directories("${BREAKPAD_FRAMEWORK_DIR}/Breakpad.framework/Headers")
+        set_target_properties(Cutter PROPERTIES LINK_FLAGS "-Wl,-F${BREAKPAD_FRAMEWORK_DIR}")
+        target_link_libraries(Cutter PRIVATE "-framework Breakpad")
+    else()
+        find_package(Breakpad REQUIRED)
+        target_link_libraries(Cutter PRIVATE Breakpad::client)
+    endif()
+endif()
+
+target_link_libraries(Cutter PUBLIC Qt5::Core Qt5::Widgets Qt5::Gui PRIVATE  Qt5::Svg Qt5::Network)
+target_link_libraries(Cutter PUBLIC ${RADARE2_TARGET})
 if(CUTTER_ENABLE_PYTHON)
-    target_link_libraries(Cutter ${PYTHON_LIBRARIES})
+    if (WIN32)
+        # On windows some of the Python STABLE API functions are in seperate library
+        # which isn't added by CMake.
+        get_filename_component(_PYTHON_LIB_DIR ${PYTHON_LIBRARIES} DIRECTORY)
+        target_link_directories(Cutter PRIVATE ${_PYTHON_LIB_DIR})
+    endif()
+    target_link_libraries(Cutter PRIVATE ${PYTHON_LIBRARIES})
     if(CUTTER_ENABLE_PYTHON_BINDINGS)
-        target_link_libraries(Cutter Shiboken2::libshiboken PySide2::pyside2)
+        target_link_libraries(Cutter PRIVATE Shiboken2::libshiboken PySide2::pyside2)
 
-        get_target_property(BINDINGS_INCLUDE_DIRS Cutter INCLUDE_DIRECTORIES)
+        get_target_property(RAW_BINDINGS_INCLUDE_DIRS Cutter INCLUDE_DIRECTORIES)
+        set(BINDINGS_INCLUDE_DIRS "")
+        foreach(_dir ${RAW_BINDINGS_INCLUDE_DIRS})
+            string(REGEX REPLACE "\\$<BUILD_INTERFACE:(.*)>" "\\1" _dir ${_dir})
+            string(REGEX REPLACE "\\$<INSTALL_INTERFACE:(.*)>" "" _dir ${_dir})
+            if (NOT "${_dir}" STREQUAL "")
+                list(APPEND BINDINGS_INCLUDE_DIRS "${_dir}")
+            endif()
+        endforeach()
+
         if(APPLE AND _qt5Core_install_prefix)
             list(APPEND BINDINGS_INCLUDE_DIRS "${_qt5Core_install_prefix}/include")
             list(APPEND BINDINGS_INCLUDE_DIRS "${_qt5Core_install_prefix}/include/QtCore")
@@ -165,14 +249,60 @@ if(CUTTER_ENABLE_PYTHON)
             list(APPEND BINDINGS_INCLUDE_DIRS "${_qt5Core_install_prefix}/include/QtWidgets")
         endif()
         list(APPEND BINDINGS_INCLUDE_DIRS ${Qt5Core_INCLUDE_DIRS} ${Qt5Widgets_INCLUDE_DIRS} ${Qt5Gui_INCLUDE_DIRS})
+        list(APPEND BINDINGS_INCLUDE_DIRS ${Radare2_INCLUDE_DIRS})
         list(APPEND BINDINGS_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}")
-        string(REPLACE ";" ":" BINDINGS_INCLUDE_DIRS "${BINDINGS_INCLUDE_DIRS}")
+        if (NOT WIN32)
+            string(REPLACE ";" ":" BINDINGS_INCLUDE_DIRS "${BINDINGS_INCLUDE_DIRS}")
+        endif()
 
         qmake_configure_file("${BINDINGS_SRC_DIR}/bindings.txt.in" "${BINDINGS_BUILD_DIR}/bindings.txt")
+        add_compile_definitions(WIN32_LEAN_AND_MEAN)
     endif()
 endif()
 
-if(CUTTER_ENABLE_PYTHON AND CUTTER_ENABLE_JUPYTER AND CUTTER_ENABLE_QTWEBENGINE)
-    target_link_libraries(Cutter Qt5::WebEngineWidgets)
+if(TARGET KF5::SyntaxHighlighting)
+    target_link_libraries(Cutter PRIVATE KF5::SyntaxHighlighting)
+    target_compile_definitions(Cutter PRIVATE CUTTER_ENABLE_KSYNTAXHIGHLIGHTING)
 endif()
 
+if (CUTTER_APPIMAGE_BUILD)
+    target_compile_definitions(Cutter PRIVATE APPIMAGE)
+endif()
+
+if (CUTTER_PACKAGE_R2DEC)
+    target_compile_definitions(Cutter PRIVATE CUTTER_APPVEYOR_R2DEC)
+endif()
+
+include(Translations)
+
+# Install files
+install(TARGETS Cutter
+        EXPORT CutterTargets
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        BUNDLE DESTINATION "." # needs to be tested
+        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT Devel
+)
+install(EXPORT CutterTargets
+    NAMESPACE Cutter::
+    DESTINATION "${ConfigPackageLocation}"
+    COMPONENT Devel)
+install(FILES
+    cmake/CutterConfig.cmake
+    DESTINATION ${ConfigPackageLocation}
+    COMPONENT Devel
+)
+foreach(_file ${HEADER_FILES})
+    # Can't use target PUBLIC_HEADER option for installing due to multiple directories
+    get_filename_component(_header_dir "${_file}" DIRECTORY)
+    install (FILES "${_file}" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/cutter/${_header_dir}" COMPONENT Devel)
+endforeach()
+
+if(UNIX AND NOT APPLE)
+    install (FILES "img/cutter.svg"
+                DESTINATION "share/icons/hicolor/scalable/apps/")
+    install(FILES "org.radare.Cutter.desktop"
+        DESTINATION "share/applications"
+        COMPONENT Devel)
+endif()
+
+include(Packaging)

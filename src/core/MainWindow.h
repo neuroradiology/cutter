@@ -6,6 +6,9 @@
 #include "dialogs/WelcomeDialog.h"
 #include "common/Configuration.h"
 #include "common/InitialOptions.h"
+#include "common/IOModesController.h"
+#include "common/CutterLayout.h"
+#include "MemoryDockWidget.h"
 
 #include <memory>
 
@@ -43,20 +46,18 @@ class TypesWidget;
 class HeadersWidget;
 class ZignaturesWidget;
 class SearchWidget;
-#ifdef CUTTER_ENABLE_JUPYTER
-class JupyterWidget;
-#endif
 class QDockWidget;
 class DisassemblyWidget;
 class GraphWidget;
 class HexdumpWidget;
-class PseudocodeWidget;
+class DecompilerWidget;
 class OverviewWidget;
+class R2GraphWidget;
+class CallGraphWidget;
 
 namespace Ui {
 class MainWindow;
 }
-
 
 class MainWindow : public QMainWindow
 {
@@ -68,13 +69,11 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
-    void openNewFile(InitialOptions options = InitialOptions(), bool skipOptionsDialog = false);
+    void openNewFile(InitialOptions &options, bool skipOptionsDialog = false);
     void displayNewFileDialog();
     void displayWelcomeDialog();
     void closeNewFileDialog();
     void openProject(const QString &project_name);
-
-    void initUI();
 
     /**
      * @param quit whether to show destructive button in dialog
@@ -90,21 +89,28 @@ public:
 
     void closeEvent(QCloseEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
-    void readSettingsOrDefault();
+    void readSettings();
     void saveSettings();
-    void readDebugSettings();
-    void saveDebugSettings();
     void setFilename(const QString &fn);
     void refreshOmniBar(const QStringList &flags);
 
-    void addToDockWidgetList(QDockWidget *dockWidget);
-    void addDockWidgetAction(QDockWidget *dockWidget, QAction *action);
-    void addExtraWidget(QDockWidget *extraDock);
+    void addWidget(CutterDockWidget *widget);
+    void addMemoryDockWidget(MemoryDockWidget *widget);
+    void removeWidget(CutterDockWidget *widget);
+    void addExtraWidget(CutterDockWidget *extraDock);
+    MemoryDockWidget *addNewMemoryWidget(MemoryWidgetType type, RVA address, bool synchronized = true);
 
-    void addPluginDockWidget(QDockWidget *dockWidget, QAction *action);
+    CUTTER_DEPRECATED("Action will be ignored. Use addPluginDockWidget(CutterDockWidget*) instead.")
+    void addPluginDockWidget(CutterDockWidget *dockWidget, QAction *) { addPluginDockWidget(dockWidget); }
+    void addPluginDockWidget(CutterDockWidget *dockWidget);
+    enum class MenuType { File, Edit, View, Windows, Debug, Help, Plugins };
+    /**
+     * @brief Getter for MainWindow's different menus
+     * @param type The type which represents the desired menu
+     * @return The requested menu or nullptr if "type" is invalid
+     */
+    QMenu *getMenuByType(MenuType type);
     void addMenuFileAction(QAction *action);
-
-    void updateDockActionChecked(QAction * action);
 
     QString getFilename() const
     {
@@ -112,11 +118,29 @@ public:
     }
     void messageBoxWarning(QString title, QString message);
 
+    QString getUniqueObjectName(const QString &widgetType) const;
+    void showMemoryWidget();
+    void showMemoryWidget(MemoryWidgetType type);
+    enum class AddressTypeHint { Function, Data, Unknown };
+    QMenu *createShowInMenu(QWidget *parent, RVA address, AddressTypeHint addressType = AddressTypeHint::Unknown);
+    void setCurrentMemoryWidget(MemoryDockWidget* memoryWidget);
+    MemoryDockWidget* getLastMemoryWidget();
+
+    /* Context menu plugins */
+    enum class ContextMenuType { Disassembly, Addressable };
+    /**
+     * @brief Fetches the pointer to a context menu extension of type
+     * @param type - the type of the context menu
+     * @return plugins submenu of the selected context menu
+     */
+    QMenu *getContextMenuExtensions(ContextMenuType type);
+
 public slots:
     void finalizeOpen();
 
     void refreshAll();
-
+    void seekToFunctionLastInstruction();
+    void seekToFunctionStart();
     void setPanelLock();
     void setTabLocation();
 
@@ -125,6 +149,8 @@ public slots:
     void on_actionLockUnlock_triggered();
 
     void on_actionTabs_triggered();
+
+    void on_actionAnalyze_triggered();
 
     void lockUnlock_Docks(bool what);
 
@@ -138,17 +164,17 @@ public slots:
 private slots:
     void on_actionAbout_triggered();
     void on_actionIssue_triggered();
-    void on_actionExtraGraph_triggered();
-    void on_actionExtraHexdump_triggered();
-    void on_actionExtraDisassembly_triggered();
+    void documentationClicked();
+    void addExtraGraph();
+    void addExtraHexdump();
+    void addExtraDisassembly();
+    void addExtraDecompiler();
 
     void on_actionRefresh_Panels_triggered();
 
     void on_actionDisasAdd_comment_triggered();
 
     void on_actionDefault_triggered();
-
-    void on_actionFunctionsRename_triggered();
 
     void on_actionNew_triggered();
 
@@ -157,10 +183,8 @@ private slots:
 
     void on_actionBackward_triggered();
     void on_actionForward_triggered();
-    void on_actionUndoSeek_triggered();
-    void on_actionRedoSeek_triggered();
 
-    void on_actionOpen_triggered();
+    void on_actionMap_triggered();
 
     void on_actionTabs_on_Top_triggered();
 
@@ -172,11 +196,11 @@ private slots:
 
     void on_actionPreferences_triggered();
 
-    void on_actionAnalyze_triggered();
-
     void on_actionImportPDB_triggered();
 
     void on_actionExport_as_code_triggered();
+
+    void on_actionGrouped_dock_dragging_triggered(bool checked);
 
     void projectSaved(bool successfully, const QString &name);
 
@@ -184,16 +208,15 @@ private slots:
 
     void mousePressEvent(QMouseEvent *event) override;
     bool eventFilter(QObject *object, QEvent *event) override;
-    void changeDebugView();
-    void changeDefinedView();
+    bool event(QEvent *event) override;
+    void toggleDebugView();
+    void chooseThemeIcons();
 
-    void disconnectOverview();
-    void updateOverview();
-    void forceUpdateOverview();
-    void updateOverviewAddr();
-    void drawOverview();
-    void adjustGraph();
+    void onZoomIn();
+    void onZoomOut();
+    void onZoomReset();
 
+    void setAvailableIOModeOptions();
 private:
     CutterCore *core;
 
@@ -204,21 +227,18 @@ private:
     QString filename;
     std::unique_ptr<Ui::MainWindow> ui;
     Highlighter *highlighter;
-    AsciiHighlighter *hex_highlighter;
     VisualNavbar *visualNavbar;
     Omnibar *omnibar;
     ProgressIndicator *tasksProgressIndicator;
+    QByteArray emptyState;
+    IOModesController ioModesController;
 
     Configuration *configuration;
 
-    QList<QDockWidget *> dockWidgets;
-    QMap<QAction *, QDockWidget *> dockWidgetActions;
-    DisassemblyWidget  *disassemblyDock = nullptr;
-    HexdumpWidget      *hexdumpDock = nullptr;
-    PseudocodeWidget   *pseudocodeDock = nullptr;
-    GraphWidget        *graphDock = nullptr;
-    GraphWidget        *targetGraphDock = nullptr;
+    QList<CutterDockWidget *> dockWidgets;
+    QList<CutterDockWidget *> pluginDocks;
     OverviewWidget     *overviewDock = nullptr;
+    QAction *actionOverview = nullptr;
     EntrypointWidget   *entrypointDock = nullptr;
     FunctionsWidget    *functionsDock = nullptr;
     ImportsWidget      *importsDock = nullptr;
@@ -232,7 +252,6 @@ private:
     StringsWidget      *stringsDock = nullptr;
     FlagsWidget        *flagsDock = nullptr;
     Dashboard          *dashboardDock = nullptr;
-    QLineEdit          *gotoEntry = nullptr;
     SdbWidget          *sdbDock = nullptr;
     SectionsWidget     *sectionsDock = nullptr;
     SegmentsWidget     *segmentsDock = nullptr;
@@ -241,41 +260,78 @@ private:
     ClassesWidget      *classesDock = nullptr;
     ResourcesWidget    *resourcesDock = nullptr;
     VTablesWidget      *vTablesDock = nullptr;
-    DisassemblerGraphView *graphView = nullptr;
-    QDockWidget        *asmDock = nullptr;
-    QDockWidget        *calcDock = nullptr;
-    QDockWidget        *stackDock = nullptr;
-    QDockWidget        *registersDock = nullptr;
-    QDockWidget        *backtraceDock = nullptr;
-    QDockWidget        *memoryMapDock = nullptr;
+    CutterDockWidget   *stackDock = nullptr;
+    CutterDockWidget   *threadsDock = nullptr;
+    CutterDockWidget   *processesDock = nullptr;
+    CutterDockWidget   *registersDock = nullptr;
+    CutterDockWidget   *backtraceDock = nullptr;
+    CutterDockWidget   *memoryMapDock = nullptr;
     NewFileDialog      *newFileDialog = nullptr;
-    QDockWidget        *breakpointDock = nullptr;
-    QDockWidget        *registerRefsDock = nullptr;
-#ifdef CUTTER_ENABLE_JUPYTER
-    JupyterWidget      *jupyterDock = nullptr;
-#endif
+    CutterDockWidget   *breakpointDock = nullptr;
+    CutterDockWidget   *registerRefsDock = nullptr;
+    R2GraphWidget      *r2GraphDock = nullptr;
+    CallGraphWidget    *callGraphDock = nullptr;
+    CallGraphWidget    *globalCallGraphDock = nullptr;
 
+    QMenu *disassemblyContextMenuExtensions = nullptr;
+    QMenu *addressableContextMenuExtensions = nullptr;
+
+    QMap<QString, Cutter::CutterLayout> layouts;
+
+    void initUI();
     void initToolBar();
     void initDocks();
-    void initLayout();
+    void initBackForwardMenu();
     void displayInitialOptionsDialog(const InitialOptions &options = InitialOptions(), bool skipOptionsDialog = false);
 
-    void resetToDefaultLayout();
-    void resetToDebugLayout();
-    void restoreDebugLayout();
+    Cutter::CutterLayout getViewLayout();
+    Cutter::CutterLayout getViewLayout(const QString &name);
 
+    void setViewLayout(const Cutter::CutterLayout &layout);
+    void loadLayouts(QSettings &settings);
+    void saveLayouts(QSettings &settings);
+
+
+    void updateMemberPointers();
     void restoreDocks();
-    void hideAllDocks();
     void showZenDocks();
     void showDebugDocks();
+    /**
+     * @brief Try to guess which is the "main" section of layout and dock there.
+     * @param widget that needs to be docked
+     */
+    void dockOnMainArea(QDockWidget *widget);
     void enableDebugWidgetsMenu(bool enable);
-    void enableOverviewMenu(bool enable);
+    /**
+     * @brief Fill menu with seek history entries.
+     * @param menu
+     * @param redo set to false for undo history, true for redo.
+     */
+    void updateHistoryMenu(QMenu *menu, bool redo = false);
+    void updateLayoutsMenu();
+    void saveNamedLayout();
+    void manageLayouts();
 
-    void toggleDockWidget(QDockWidget *dock_widget, bool show);
-
-    void updateDockActionsChecked();
     void setOverviewData();
     bool isOverviewActive();
+    /**
+     * @brief Check if a widget is one of debug specific dock widgets.
+     * @param dock
+     * @return true for debug specific widgets, false for all other including common dock widgets.
+     */
+    bool isDebugWidget(QDockWidget *dock) const;
+    bool isExtraMemoryWidget(QDockWidget *dock) const;
+
+    MemoryWidgetType getMemoryWidgetTypeToRestore();
+
+    /**
+     * @brief Map from a widget type (e.g. DisassemblyWidget::getWidgetType()) to the respective contructor of the widget
+     */
+    QMap<QString, std::function<CutterDockWidget*(MainWindow*)>> widgetTypeToConstructorMap;
+
+    MemoryDockWidget* lastSyncMemoryWidget = nullptr;
+    MemoryDockWidget* lastMemoryWidget = nullptr;
+    int functionDockWidthToRestore = 0;
 };
 
 #endif // MAINWINDOW_H

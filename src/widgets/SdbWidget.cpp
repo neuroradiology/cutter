@@ -8,23 +8,21 @@
 #include <QTreeWidget>
 
 
-SdbWidget::SdbWidget(MainWindow *main, QAction *action) :
-    CutterDockWidget(main, action),
+SdbWidget::SdbWidget(MainWindow *main) :
+    CutterDockWidget(main),
     ui(new Ui::SdbWidget)
 {
     ui->setupUi(this);
 
-    path = "";
+    path.clear();
 
-    connect(Core(), SIGNAL(refreshAll()), this, SLOT(reload()));
-    reload(nullptr);
+    connect(Core(), &CutterCore::refreshAll, this, [this](){ reload(); });
+    reload();
 }
 
 void SdbWidget::reload(QString _path)
 {
-    if (!_path.isNull()) {
-        path = _path;
-    }
+    path = _path;
 
     ui->lineEdit->setText(path);
     /* insert root sdb keyvalue pairs */
@@ -44,7 +42,9 @@ void SdbWidget::reload(QString _path)
     qhelpers::adjustColumns(ui->treeWidget, 0);
     /* namespaces */
     keys = Core()->sdbList(path);
-    keys.append("..");
+    if (!path.isEmpty()) {
+        keys.append("..");
+    }
     for (const QString &key : keys) {
         QTreeWidgetItem *tempItem = new QTreeWidgetItem();
         tempItem->setText(0, key + "/");
@@ -64,19 +64,19 @@ void SdbWidget::on_treeWidget_itemDoubleClicked(QTreeWidgetItem *item, int colum
 
     if (column == 0) {
         if (item->text(0) == "../") {
-            int idx = path.lastIndexOf("/");
+            int idx = path.lastIndexOf(QLatin1Char('/'));
             if (idx != -1) {
                 newpath = path.mid(0, idx);
             } else {
-                newpath = "";
+                newpath.clear();
             }
             reload(newpath);
 
-        } else if (item->text(0).indexOf("/") != -1) {
-            if (path != "") {
-                newpath = path + "/" + item->text(0).replace("/", "");
+        } else if (item->text(0).indexOf(QLatin1Char('/')) != -1) {
+            if (!path.isEmpty()) {
+                newpath = path + "/" + item->text(0).remove(QLatin1Char('/'));
             } else {
-                newpath = path + item->text(0).replace("/", "");
+                newpath = path + item->text(0).remove(QLatin1Char('/'));
             }
             // enter directory
             reload(newpath);

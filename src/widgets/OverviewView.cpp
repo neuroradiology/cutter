@@ -10,16 +10,28 @@
 OverviewView::OverviewView(QWidget *parent)
     : GraphView(parent)
 {
-    connect(Config(), SIGNAL(colorsUpdated()), this, SLOT(colorsUpdatedSlot()));
+    connect(Config(), &Configuration::colorsUpdated, this, &OverviewView::colorsUpdatedSlot);
     colorsUpdatedSlot();
 }
 
-void OverviewView::setData(int baseWidth, int baseHeight, std::unordered_map<ut64, GraphBlock> baseBlocks)
+void OverviewView::setData(int baseWidth, int baseHeight,
+                           std::unordered_map<ut64, GraphBlock> baseBlocks,
+                           DisassemblerGraphView::EdgeConfigurationMapping baseEdgeConfigurations)
 {
     width = baseWidth;
     height = baseHeight;
     blocks = baseBlocks;
+    edgeConfigurations = baseEdgeConfigurations;
     scaleAndCenter();
+    setCacheDirty();
+    viewport()->update();
+}
+
+void OverviewView::centreRect()
+{
+    qreal w = rangeRect.width();
+    qreal h = rangeRect.height();
+    initialDiff = QPointF(w / 2,  h / 2);
 }
 
 OverviewView::~OverviewView()
@@ -28,11 +40,9 @@ OverviewView::~OverviewView()
 
 void OverviewView::scaleAndCenter()
 {
-    current_scale = (qreal)viewport()->width() / width;
-    qreal h_scale = (qreal)viewport()->height() / height;
-    if (current_scale > h_scale) {
-        current_scale = h_scale;
-    }
+    qreal wScale = (qreal)viewport()->width() / width;
+    qreal hScale = (qreal)viewport()->height() / height;
+    setViewScale(std::min(wScale, hScale));
     center();
 }
 
@@ -42,30 +52,28 @@ void OverviewView::refreshView()
     viewport()->update();
 }
 
-void OverviewView::drawBlock(QPainter &p, GraphView::GraphBlock &block)
+void OverviewView::drawBlock(QPainter &p, GraphView::GraphBlock &block, bool interactive)
 {
-    int blockX = block.x - offset_x;
-    int blockY = block.y - offset_y;
+    Q_UNUSED(interactive)
+    QRectF blockRect(block.x, block.y, block.width, block.height);
 
     p.setPen(Qt::black);
     p.setBrush(Qt::gray);
-    p.drawRect(blockX, blockY, block.width, block.height);
+    p.drawRect(blockRect);
     p.setBrush(QColor(0, 0, 0, 100));
-    p.drawRect(blockX + 2, blockY + 2,
-               block.width, block.height);
-    p.setPen(QPen(graphNodeColor, 1));
-    p.setBrush(disassemblyBackgroundColor);
-    p.drawRect(blockX, blockY,
-               block.width, block.height);
+    p.drawRect(blockRect.translated(2, 2));
+
     // Draw basic block highlighting/tracing
     auto bb = Core()->getBBHighlighter()->getBasicBlock(block.entry);
     if (bb) {
         QColor color(bb->color);
         color.setAlphaF(0.5);
         p.setBrush(color);
-        p.drawRect(block.x, block.y,
-                   block.width, block.height);
+    } else {
+        p.setBrush(disassemblyBackgroundColor);
     }
+    p.setPen(QPen(graphNodeColor, 1));
+    p.drawRect(blockRect);
 }
 
 void OverviewView::paintEvent(QPaintEvent *event)
@@ -75,34 +83,26 @@ void OverviewView::paintEvent(QPaintEvent *event)
         return;
     }
     QPainter p(viewport());
-    p.setPen(Qt::red);
+    p.setPen(graphSelectionBorder);
+    p.setBrush(graphSelectionFill);
     p.drawRect(rangeRect);
-}
-
-bool OverviewView::mouseContainsRect(QMouseEvent *event)
-{
-    if (rangeRect.contains(event->pos())) {
-        mouseActive = true;
-        initialDiff = QPointF(event->localPos().x() - rangeRect.x(), event->localPos().y() - rangeRect.y());
-        return true;
-    }
-    return false;
 }
 
 void OverviewView::mousePressEvent(QMouseEvent *event)
 {
-    if (mouseContainsRect(event)) {
-        return;
+    mouseActive = true;
+    if (rangeRect.contains(event->pos())) {
+        initialDiff = QPointF(event->localPos().x() - rangeRect.x(), event->localPos().y() - rangeRect.y());
+    } else {
+        qreal w = rangeRect.width();
+        qreal h = rangeRect.height();
+        qreal x = event->localPos().x() - w / 2;
+        qreal y = event->localPos().y() - h / 2;
+        rangeRect = QRectF(x, y, w, h);
+        initialDiff = QPointF(w / 2,  h / 2);
+        viewport()->update();
+        emit mouseMoved();
     }
-    qreal w = rangeRect.width();
-    qreal h = rangeRect.height();
-    qreal x = event->localPos().x() - w / 2;
-    qreal y = event->localPos().y() - h / 2;
-    rangeRect = QRectF(x, y, w, h);
-    useCache = true;
-    viewport()->update();
-    emit mouseMoved();
-    mouseContainsRect(event);
 }
 
 void OverviewView::mouseReleaseEvent(QMouseEvent *event)
@@ -119,7 +119,6 @@ void OverviewView::mouseMoveEvent(QMouseEvent *event)
     qreal x = event->localPos().x() - initialDiff.x();
     qreal y = event->localPos().y() - initialDiff.y();
     rangeRect = QRectF(x, y, rangeRect.width(), rangeRect.height());
-    useCache = true;
     viewport()->update();
     emit mouseMoved();
 }
@@ -130,12 +129,15 @@ void OverviewView::wheelEvent(QWheelEvent *event)
 }
 
 GraphView::EdgeConfiguration OverviewView::edgeConfiguration(GraphView::GraphBlock &from,
-                                                                      GraphView::GraphBlock *to)
+                                                             GraphView::GraphBlock *to,
+                                                             bool interactive)
 {
-    Q_UNUSED(from);
-    Q_UNUSED(to);
+    Q_UNUSED(interactive)
     EdgeConfiguration ec;
-    ec.width_scale = current_scale;
+    auto baseEcIt = edgeConfigurations.find({from.entry, to->entry});
+    if (baseEcIt != edgeConfigurations.end())
+        ec = baseEcIt->second;
+    ec.width_scale = 1.0 / getViewScale();
     return ec;
 }
 
@@ -144,5 +146,14 @@ void OverviewView::colorsUpdatedSlot()
     disassemblyBackgroundColor = ConfigColor("gui.overview.node");
     graphNodeColor = ConfigColor("gui.border");
     backgroundColor = ConfigColor("gui.background");
+    graphSelectionFill = ConfigColor("gui.overview.fill");
+    graphSelectionBorder = ConfigColor("gui.overview.border");
+    setCacheDirty();
     refreshView();
+}
+
+void OverviewView::setRangeRect(QRectF rect)
+{
+    rangeRect = rect;
+    viewport()->update();
 }

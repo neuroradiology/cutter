@@ -1,13 +1,11 @@
 $dist = $args[0]
 $python = Split-Path((Get-Command python.exe).Path)
 
-git clone https://github.com/wargio/r2dec-js.git
+if (-not (Test-Path -Path 'r2dec-js' -PathType Container)) {
+    git clone https://github.com/radareorg/r2dec-js.git --branch master --depth 1
+}
 cd r2dec-js
-& $python\Scripts\meson.exe --buildtype=release -Dc_args=-DDUK_USE_DATE_NOW_WINDOWS p build
-ninja -C build
-Copy-Item . -Recurse -Destination $dist\radare2\lib\plugins\r2dec-js
-Copy-Item build\core_pdd.dll -Destination $dist\radare2\lib\plugins
-Remove-Item -Recurse -Force $dist\radare2\lib\plugins\r2dec-js\p
-Remove-Item -Recurse -Force $dist\radare2\lib\plugins\r2dec-js\build
-Remove-Item -Recurse -Force $dist\radare2\lib\plugins\r2dec-js\.git
-Remove-Item -Recurse -Force $dist\radare2\lib\plugins\r2dec-js\.github
+#git checkout b5a0d15c7bcc488f268ffb0931b7ced2919f6c9d
+& meson.exe --buildtype=release -Dc_args=-DDUK_USE_DATE_NOW_WINDOWS --prefix=$dist --libdir=lib\plugins --datadir=lib\plugins p build
+ninja -C build install
+Remove-Item -Recurse -Force $dist\lib\plugins\core_pdd.lib

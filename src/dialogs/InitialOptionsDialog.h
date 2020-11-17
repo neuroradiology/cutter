@@ -2,20 +2,16 @@
 #define OPTIONSDIALOG_H
 
 #include <QDialog>
-#include <QStringList>
-#include <QTimer>
-#include <QElapsedTimer>
+#include <QCheckBox>
 #include <memory>
-#include "core/Cutter.h"
-#include "common/AnalTask.h"
 #include "common/InitialOptions.h"
 
 namespace Ui {
 class InitialOptionsDialog;
 }
 
+class CutterCore;
 class MainWindow;
-
 class InitialOptionsDialog : public QDialog
 {
     Q_OBJECT
@@ -23,8 +19,6 @@ class InitialOptionsDialog : public QDialog
 public:
     explicit InitialOptionsDialog(MainWindow *main);
     ~InitialOptionsDialog();
-
-    QStringList    asm_plugins;
 
     void setupAndStartAnalysis(/*int level, QList<QString> advanced*/);
 
@@ -52,16 +46,32 @@ private:
     QString analysisDescription(int level);
     QString shellcode;
     int analLevel;
+    QList<RAsmPluginDescription> asmPlugins;
+
 
     void updateCPUComboBox();
+    struct AnalysisCommands {
+        CommandDescription commandDesc;
+        QCheckBox *checkbox;
+        bool checked;
+    };
+    QList<AnalysisCommands> analysisCommands;
 
-    QString getSelectedArch();
-    QString getSelectedCPU();
-    int getSelectedBits();
-    int getSelectedBBSize();
-    InitialOptions::Endianness getSelectedEndianness();
-    QString getSelectedOS();
-    QList<QString> getSelectedAdvancedAnalCmds();
+    QList<QString> getAnalysisCommands(const InitialOptions &options);
+    QString getSelectedArch() const;
+    QString getSelectedCPU() const;
+    int getSelectedBits() const;
+    InitialOptions::Endianness getSelectedEndianness() const;
+    QString getSelectedOS() const;
+    QList<CommandDescription> getSelectedAdvancedAnalCmds() const;
+
+    /**
+     * @brief setTooltipWithConfigHelp is an helper function that add a tolltip to a widget with
+     * a description of a given radare2 eval config.
+     * @param w - a widget to which to add the tooltip
+     * @param config - name of a configuration variable such as "asm.bits".
+     */
+    void setTooltipWithConfigHelp(QWidget *w, const char *config);
 
 public:
     void loadOptions(const InitialOptions &options);

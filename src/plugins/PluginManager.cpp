@@ -9,11 +9,14 @@
 
 #include "PluginManager.h"
 #include "CutterPlugin.h"
+#include "CutterConfig.h"
+#include "common/Helpers.h"
 
 #include <QDir>
 #include <QCoreApplication>
 #include <QPluginLoader>
 #include <QStandardPaths>
+#include <QDebug>
 
 Q_GLOBAL_STATIC(PluginManager, uniqueInstance)
 
@@ -30,56 +33,113 @@ PluginManager::~PluginManager()
 {
 }
 
-QString PluginManager::getPluginsDirectory() const
+void PluginManager::loadPlugins(bool enablePlugins)
 {
-    QStringList locations = QStandardPaths::standardLocations(QStandardPaths::AppDataLocation);
-    if (locations.isEmpty()) {
-        return QString();
-    }
-    QDir pluginsDir(locations.first());
-    pluginsDir.mkpath("plugins");
-    if (!pluginsDir.cd("plugins")) {
-        return QString();
-    }
-    return pluginsDir.absolutePath();
-}
+    assert(plugins.empty());
 
-void PluginManager::loadPlugins()
-{
-    assert(plugins.isEmpty());
-
-    QString pluginsDirStr = getPluginsDirectory();
-    if (pluginsDirStr.isEmpty()) {
-        qCritical() << "Failed to get a path to load plugins from.";
+    if (!enablePlugins) {
+        // [#2159] list but don't enable the plugins
         return;
     }
-    QDir pluginsDir(pluginsDirStr);
 
+    QString userPluginDir = getUserPluginsDirectory();
+    if (!userPluginDir.isEmpty()) {
+        loadPluginsFromDir(QDir(userPluginDir), true);
+    }
+    const auto pluginDirs = getPluginDirectories();
+    for (auto &dir : pluginDirs) {
+        if (dir.absolutePath() == userPluginDir) {
+            continue;
+        }
+        loadPluginsFromDir(dir);
+    }
+}
+
+void PluginManager::loadPluginsFromDir(const QDir &pluginsDir, bool writable)
+{
     qInfo() << "Plugins are loaded from" << pluginsDir.absolutePath();
+    int loadedPlugins = plugins.size();
+    if (!pluginsDir.exists()) {
+        return;
+    }
 
     QDir nativePluginsDir = pluginsDir;
-    nativePluginsDir.mkdir("native");
+    if (writable) {
+        nativePluginsDir.mkdir("native");
+    }
     if (nativePluginsDir.cd("native")) {
         loadNativePlugins(nativePluginsDir);
     }
 
 #ifdef CUTTER_ENABLE_PYTHON_BINDINGS
     QDir pythonPluginsDir = pluginsDir;
-    pythonPluginsDir.mkdir("python");
+    if (writable) {
+        pythonPluginsDir.mkdir("python");
+    }
     if (pythonPluginsDir.cd("python")) {
         loadPythonPlugins(pythonPluginsDir.absolutePath());
     }
 #endif
 
-    qInfo() << "Loaded" << plugins.length() << "plugin(s).";
+    loadedPlugins = plugins.size() - loadedPlugins;
+    qInfo() << "Loaded" << loadedPlugins << "plugin(s).";
 }
 
+void PluginManager::PluginTerminator::operator()(CutterPlugin *plugin) const
+{
+    plugin->terminate();
+    delete plugin;
+}
 
 void PluginManager::destroyPlugins()
 {
-    for (CutterPlugin *plugin : plugins) {
-        delete plugin;
+    plugins.clear();
+}
+
+QVector<QDir> PluginManager::getPluginDirectories() const
+{
+    QVector<QDir> result;
+    QStringList locations = QStandardPaths::standardLocations(QStandardPaths::AppDataLocation);
+    for (auto &location : locations) {
+        result.push_back(QDir(location).filePath("plugins"));
     }
+
+#ifdef APPIMAGE
+    {
+        auto plugdir = QDir(QCoreApplication::applicationDirPath()); // appdir/bin
+        plugdir.cdUp(); // appdir
+        if (plugdir.cd("share/RadareOrg/Cutter/plugins")) { // appdir/share/RadareOrg/Cutter/plugins
+            result.push_back(plugdir);
+        }
+    }
+#endif
+
+#if QT_VERSION < QT_VERSION_CHECK(5, 6, 0) && defined(Q_OS_UNIX)
+    QChar listSeparator = ':';
+#else
+    QChar listSeparator = QDir::listSeparator();
+#endif
+    QString extra_plugin_dirs = CUTTER_EXTRA_PLUGIN_DIRS;
+    for (auto& path : extra_plugin_dirs.split(listSeparator, CUTTER_QT_SKIP_EMPTY_PARTS)) {
+        result.push_back(QDir(path));
+    }
+
+    return result;
+}
+
+
+QString PluginManager::getUserPluginsDirectory() const
+{
+    QString location = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (location.isEmpty()) {
+        return QString();
+    }
+    QDir pluginsDir(location);
+    pluginsDir.mkpath("plugins");
+    if (!pluginsDir.cd("plugins")) {
+        return QString();
+    }
+    return pluginsDir.absolutePath();
 }
 
 void PluginManager::loadNativePlugins(const QDir &directory)
@@ -88,14 +148,18 @@ void PluginManager::loadNativePlugins(const QDir &directory)
         QPluginLoader pluginLoader(directory.absoluteFilePath(fileName));
         QObject *plugin = pluginLoader.instance();
         if (!plugin) {
+            auto errorString = pluginLoader.errorString();
+            if (!errorString.isEmpty()) {
+                qWarning() << "Load Error for plugin" << fileName << ":" << errorString;
+            }
             continue;
         }
-        CutterPlugin *cutterPlugin = qobject_cast<CutterPlugin *>(plugin);
+        PluginPtr cutterPlugin{qobject_cast<CutterPlugin *>(plugin)};
         if (!cutterPlugin) {
             continue;
         }
         cutterPlugin->setupPlugin();
-        plugins.append(cutterPlugin);
+        plugins.push_back(std::move(cutterPlugin));
     }
 }
 
@@ -111,17 +175,16 @@ void PluginManager::loadPythonPlugins(const QDir &directory)
         }
         QString moduleName;
         if (fileName.endsWith(".py")) {
-            QStringList l = fileName.split(".py");
-            moduleName = l[0];
+            moduleName = fileName.chopped(3);
         } else {
             moduleName = fileName;
         }
-        CutterPlugin *cutterPlugin = loadPythonPlugin(moduleName.toLocal8Bit().constData());
+        PluginPtr cutterPlugin{loadPythonPlugin(moduleName.toLocal8Bit().constData())};
         if (!cutterPlugin) {
             continue;
         }
         cutterPlugin->setupPlugin();
-        plugins.append(cutterPlugin);
+        plugins.push_back(std::move(cutterPlugin));
     }
 
     PythonManager::ThreadHolder threadHolder;
